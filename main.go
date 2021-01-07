@@ -11,24 +11,28 @@ import (
 	"github.com/nsf/termbox-go"
 )
 
-var prompt string
-var choices []string // list of choices
-var vsel int         // list index of current selection [0; num choices]
-var psel int         // terminal row of where current selection is
-var vtop int         // list index of topmost element in selection view
-var ptop int         // terminal row of where topmost choice is
-var pheight int      // number of rows which show selections
-var promptfg termbox.Attribute
-var promptbg termbox.Attribute
-var defaultfg termbox.Attribute
-var defaultbg termbox.Attribute
-var selfg termbox.Attribute
-var selbg termbox.Attribute
+const promptfg = termbox.ColorDefault
+const promptbg = termbox.ColorDefault
+const defaultfg = termbox.ColorDefault
+const defaultbg = termbox.ColorDefault
+const selfg = termbox.ColorBlack
+const selbg = termbox.ColorWhite
+const selIndicatorBg = termbox.ColorMagenta
+const selIndicatorFg = termbox.ColorBlack
 
-var w int         // term width
-var h int         // term height
-var selTop int    // table index of topmost choice in selection area
-var selBottom int // table index of last choice in selection area
+var prompt string
+var choices []string  // list of choices
+var isSelected []bool // list of flags of selected choices
+var numSelected int   // count of selected choices
+var vsel int          // list index of current selection [0; num choices]
+var psel int          // terminal row of where current selection is
+var vtop int          // list index of topmost element in selection view
+var ptop int          // terminal row of where topmost choice is
+var pheight int       // number of rows which show selections
+var w int             // term width
+var h int             // term height
+var selTop int        // table index of topmost choice in selection area
+var selBottom int     // table index of last choice in selection area
 
 func minInt(x, y int) int {
 	if x <= y {
@@ -37,7 +41,7 @@ func minInt(x, y int) int {
 	return y
 }
 
-func drawChoice(prow int, s string, selected bool) {
+func redrawChoice2(prow, vindex int, selected bool) {
 	var fg termbox.Attribute
 	var bg termbox.Attribute
 	if selected {
@@ -53,7 +57,7 @@ func drawChoice(prow int, s string, selected bool) {
 
 	/* draw text */
 	x := 2
-	for _, c := range s {
+	for _, c := range choices[vindex] {
 		termbox.SetCell(x, prow, c, fg, bg)
 		x += runewidth.RuneWidth(c)
 	}
@@ -65,11 +69,12 @@ func drawChoice(prow int, s string, selected bool) {
 	}
 }
 
+/* TODO: Refactor into using a range slice for better performance */
 func redrawChoices() {
 	for ii := 0; ii < minInt(len(choices)-vtop, pheight); ii++ {
-		drawChoice(ptop+ii, choices[vtop+ii], false)
+		redrawChoice2(ptop+ii, vtop+ii, false)
 	}
-	drawChoice(psel, choices[vsel], true)
+	redrawChoice2(psel, vsel, true)
 }
 
 func drawString(x, y int, s string, fg, bg termbox.Attribute) {
@@ -86,10 +91,11 @@ func clearToEndOfRow(x, y int) {
 }
 
 func redrawCommandLine() {
-	redrawSelectionIndex()
+	redrawCursorIndex()
+	drawString(0, h-1, " \u21a9 Accept   \u2423 Select   \u241b Abort", defaultfg, defaultbg)
 }
 
-func redrawSelectionIndex() {
+func redrawCursorIndex() {
 	nStr := fmt.Sprintf("%d", len(choices))
 	clearToEndOfRow(w-(len(nStr)*2+1), h-1)
 	selnumStr := fmt.Sprintf("%d/%s", vsel+1, nStr)
@@ -98,6 +104,31 @@ func redrawSelectionIndex() {
 
 func redrawPrompt() {
 	drawString(0, 0, prompt, defaultfg, defaultbg)
+}
+
+func redrawSelectionIndicator(prow int, selected bool) {
+	var fg termbox.Attribute
+	var bg termbox.Attribute
+	if selected {
+		fg = selIndicatorFg
+		bg = selIndicatorBg
+	} else {
+		fg = defaultbg
+		bg = defaultbg
+	}
+	termbox.SetCell(0, prow, ' ', fg, bg)
+}
+
+func uiToggleSelection() {
+	isSel := isSelected[vsel]
+	if isSel {
+		numSelected--
+	} else {
+		numSelected++
+	}
+	isSelected[vsel] = !isSel
+	redrawSelectionIndicator(psel, isSelected[vsel])
+	redrawCommandLine()
 }
 
 func main() {
@@ -138,14 +169,9 @@ func main() {
 	termbox.SetInputMode(termbox.InputEsc)
 
 	// init
+	isSelected = make([]bool, len(choices))
 	w, h = termbox.Size()
 	prompt = *argPrompt
-	promptfg = termbox.ColorDefault
-	promptbg = termbox.ColorDefault
-	defaultfg = termbox.ColorDefault
-	defaultbg = termbox.ColorDefault
-	selfg = termbox.ColorBlack
-	selbg = termbox.ColorWhite
 
 	vsel = 0
 	vtop = 0
@@ -164,7 +190,7 @@ mainloop:
 	for {
 		termbox.Flush()
 		switch ev := termbox.PollEvent(); ev.Type {
-		case termbox.EventKey:
+		case termbox.EventKey: // TODO: uiFocusNext, uiFocusPrev
 			if ev.Ch == 'j' {
 				if vsel < len(choices)-1 {
 					vsel++
@@ -173,10 +199,10 @@ mainloop:
 						redrawChoices()
 					} else {
 						psel++
-						drawChoice(psel-1, choices[vsel-1], false)
-						drawChoice(psel, choices[vsel], true)
+						redrawChoice2(psel-1, vsel-1, false)
+						redrawChoice2(psel, vsel, true)
 					}
-					redrawSelectionIndex()
+					redrawCursorIndex()
 				}
 			} else if ev.Ch == 'k' {
 				if vsel > 0 {
@@ -186,11 +212,13 @@ mainloop:
 						redrawChoices()
 					} else {
 						psel--
-						drawChoice(psel+1, choices[vsel+1], false)
-						drawChoice(psel, choices[vsel], true)
+						redrawChoice2(psel+1, vsel+1, false)
+						redrawChoice2(psel, vsel, true)
 					}
-					redrawSelectionIndex()
+					redrawCursorIndex()
 				}
+			} else if ev.Key == termbox.KeySpace {
+				uiToggleSelection()
 			} else if ev.Ch == 'q' || ev.Key == termbox.KeyEsc {
 				exitCode = 1
 				return
@@ -200,12 +228,18 @@ mainloop:
 		}
 	}
 	termbox.Close()
-	fmt.Printf("%s\n", choices[vsel])
+	if numSelected > 0 {
+		for i, v := range isSelected {
+			if v {
+				fmt.Printf("%s\n", choices[i])
+			}
+		}
+	} else {
+		fmt.Printf("%s\n", choices[vsel])
+	}
 }
 
-// TODO: Selection of multiple elements
-// TODO: Wrapping of long lines
-// TODO: -n: Omit trailing newline
-// TODO: -m: Allow multiple selection
+// TODO: Resize event
+// TODO: -s: Single selection only
 // TODO: Check whether attached to terminal
 // TODO: Input/Output delimiters
