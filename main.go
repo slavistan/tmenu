@@ -29,8 +29,8 @@ var psel int          // terminal row of where current selection is
 var vtop int          // list index of topmost element in selection view
 var ptop int          // terminal row of where topmost choice is
 var pheight int       // number of rows which show selections
-var w int             // term width
-var h int             // term height
+var width int         // term width
+var height int        // term height
 var selTop int        // table index of topmost choice in selection area
 var selBottom int     // table index of last choice in selection area
 
@@ -41,7 +41,51 @@ func minInt(x, y int) int {
 	return y
 }
 
-func redrawChoice2(prow, vindex int, selected bool) {
+func drawString(x, y int, s string, fg, bg termbox.Attribute) {
+	for _, c := range s {
+		termbox.SetCell(x, y, c, fg, bg)
+		x += runewidth.RuneWidth(c)
+	}
+}
+
+func termClear() {
+	for y := 0; y < height; y++ {
+		termClearRow(y)
+	}
+}
+
+func termClearRow(row int) {
+	for x := 0; x < width; x++ {
+		termbox.SetCell(x, row, ' ', defaultfg, defaultbg)
+	}
+}
+
+func termClearRect(x, y, w, h int) {
+	for row := y; row < y+h; row++ {
+		for col := x; col < x+w; col++ {
+			termbox.SetCell(col, row, ' ', defaultfg, defaultbg)
+		}
+	}
+}
+
+func clearToEndOfRow(x, y int) {
+	for ; x < width; x++ {
+		termbox.SetCell(x, y, ' ', defaultfg, defaultbg)
+	}
+}
+
+func redrawAll(clear bool) {
+	if clear {
+		termClear()
+	}
+
+	termClear()
+	redrawPromptLine()
+	redrawChoices()
+	redrawCommandLine()
+}
+
+func redrawChoice(prow, vindex int, selected bool) {
 	var fg termbox.Attribute
 	var bg termbox.Attribute
 	if selected {
@@ -63,7 +107,7 @@ func redrawChoice2(prow, vindex int, selected bool) {
 	}
 
 	/* clear rest of line */
-	for ii := x; ii < w; ii++ {
+	for ii := x; ii < width; ii++ {
 		termbox.SetCell(x, prow, ' ', fg, bg)
 		x++
 	}
@@ -72,38 +116,35 @@ func redrawChoice2(prow, vindex int, selected bool) {
 /* TODO: Refactor into using a range slice for better performance */
 func redrawChoices() {
 	for ii := 0; ii < minInt(len(choices)-vtop, pheight); ii++ {
-		redrawChoice2(ptop+ii, vtop+ii, false)
+		redrawChoice(ptop+ii, vtop+ii, false)
+		if isSelected[vtop+ii] {
+			termbox.SetCell(0, ptop+ii, ' ', selIndicatorFg, selIndicatorBg)
+		} else {
+			termbox.SetCell(0, ptop+ii, ' ', defaultfg, defaultbg)
+		}
 	}
-	redrawChoice2(psel, vsel, true)
-}
-
-func drawString(x, y int, s string, fg, bg termbox.Attribute) {
-	for _, c := range s {
-		termbox.SetCell(x, y, c, fg, bg)
-		x += runewidth.RuneWidth(c)
-	}
-}
-
-func clearToEndOfRow(x, y int) {
-	for ; x < w; x++ {
-		termbox.SetCell(x, y, ' ', defaultfg, defaultbg)
-	}
+	redrawChoice(psel, vsel, true)
 }
 
 func redrawCommandLine() {
-	redrawCursorIndex()
-	drawString(0, h-1, " \u21a9 Accept   \u2423 Select   \u241b Abort", defaultfg, defaultbg)
+	redrawCurrentLineIndex()
 }
 
-func redrawCursorIndex() {
+func redrawCurrentLineIndex() {
+	// TODO: Omit if terminal width too narrow
+	log.Printf("redrawCurrentLineIndex()\n")
+
 	nStr := fmt.Sprintf("%d", len(choices))
-	clearToEndOfRow(w-(len(nStr)*2+1), h-1)
+	log.Printf("nstr = %s\n", nStr)
+	clearToEndOfRow(width-(len(nStr)*2+1), height-1)
 	selnumStr := fmt.Sprintf("%d/%s", vsel+1, nStr)
-	drawString(w-len(selnumStr), h-1, selnumStr, defaultfg, defaultbg)
+	drawString(width-len(selnumStr), height-1, selnumStr, defaultfg, defaultbg)
 }
 
-func redrawPrompt() {
-	drawString(0, 0, prompt, defaultfg, defaultbg)
+func redrawPromptLine() {
+	if ptop != 0 {
+		drawString(0, 0, prompt, defaultfg, defaultbg)
+	}
 }
 
 func redrawSelectionIndicator(prow int, selected bool) {
@@ -120,15 +161,13 @@ func redrawSelectionIndicator(prow int, selected bool) {
 }
 
 func uiToggleSelection() {
-	isSel := isSelected[vsel]
-	if isSel {
+	if isSelected[vsel] {
 		numSelected--
 	} else {
 		numSelected++
 	}
-	isSelected[vsel] = !isSel
+	isSelected[vsel] = !isSelected[vsel]
 	redrawSelectionIndicator(psel, isSelected[vsel])
-	redrawCommandLine()
 }
 
 func main() {
@@ -169,23 +208,20 @@ func main() {
 	termbox.SetInputMode(termbox.InputEsc)
 
 	// init
-	isSelected = make([]bool, len(choices))
-	w, h = termbox.Size()
 	prompt = *argPrompt
-
+	isSelected = make([]bool, len(choices))
 	vsel = 0
 	vtop = 0
-	if len(*argPrompt) == 0 {
+	width, height = termbox.Size()
+	if len(prompt) == 0 {
 		ptop = 0
 	} else {
-		redrawPrompt()
 		ptop = 1
 	}
 	psel = ptop
-	pheight = h - ptop - 1 // last line is for instructions
+	pheight = height - ptop - 1 // last line is for instructions
 
-	redrawChoices()
-	redrawCommandLine()
+	redrawAll(false)
 mainloop:
 	for {
 		termbox.Flush()
@@ -199,10 +235,10 @@ mainloop:
 						redrawChoices()
 					} else {
 						psel++
-						redrawChoice2(psel-1, vsel-1, false)
-						redrawChoice2(psel, vsel, true)
+						redrawChoice(psel-1, vsel-1, false)
+						redrawChoice(psel, vsel, true)
 					}
-					redrawCursorIndex()
+					redrawCurrentLineIndex()
 				}
 			} else if ev.Ch == 'k' {
 				if vsel > 0 {
@@ -212,10 +248,10 @@ mainloop:
 						redrawChoices()
 					} else {
 						psel--
-						redrawChoice2(psel+1, vsel+1, false)
-						redrawChoice2(psel, vsel, true)
+						redrawChoice(psel+1, vsel+1, false)
+						redrawChoice(psel, vsel, true)
 					}
-					redrawCursorIndex()
+					redrawCurrentLineIndex()
 				}
 			} else if ev.Key == termbox.KeySpace {
 				uiToggleSelection()
@@ -225,6 +261,11 @@ mainloop:
 			} else if ev.Key == termbox.KeyEnter {
 				break mainloop
 			}
+		case termbox.EventResize:
+			termbox.Sync() // resize internal buffer; see termbox.Size()
+			width, height = ev.Width, ev.Height
+			pheight = height - ptop - 1
+			redrawAll(true)
 		}
 	}
 	termbox.Close()
@@ -239,7 +280,10 @@ mainloop:
 	}
 }
 
-// TODO: Resize event
+// BUG: Erroneous behavior when line count is to small to contain prompt, status and
+//   at least one line of selection.
 // TODO: -s: Single selection only
-// TODO: Check whether attached to terminal
+// TODO: Check whether attached to terminal (what for?)
+// TODO: F1 Help
+// TODO: Ctrl+u/d, PgUp/PgDown 50% scroll
 // TODO: Input/Output delimiters
