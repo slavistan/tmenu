@@ -13,26 +13,24 @@ import (
 
 const promptfg = termbox.ColorDefault
 const promptbg = termbox.ColorDefault
-const defaultfg = termbox.ColorDefault
-const defaultbg = termbox.ColorDefault
-const selfg = termbox.ColorBlack
-const selbg = termbox.ColorWhite
+const defaultFg = termbox.ColorDefault
+const defaultBg = termbox.ColorDefault
+const cursorLineFg = termbox.ColorBlack
+const cursorLineBg = termbox.ColorWhite
 const selIndicatorBg = termbox.ColorMagenta
 const selIndicatorFg = termbox.ColorBlack
 
 var prompt string
 var choices []string  // list of choices
 var isSelected []bool // list of flags of selected choices
-var numSelected int   // count of selected choices
-var vsel int          // list index of current selection [0; num choices]
-var psel int          // terminal row of where current selection is
-var vtop int          // list index of topmost element in selection view
-var ptop int          // terminal row of where topmost choice is
-var pheight int       // number of rows which show selections
-var width int         // term width
-var height int        // term height
-var selTop int        // table index of topmost choice in selection area
-var selBottom int     // table index of last choice in selection area
+var numSelected int   // count of all selected choices
+var cursorIndex int   // list index of currently selected choice
+var cursorRow int     // terminal row of where current selection is
+var viewTopIndex int  // list index of topmost element in selection view
+var viewTopRow int    // terminal row of topmost element in selection view
+var viewHeight int    // number of rows displaying choices
+var termWidth int     // terminal number of columns
+var termHeight int    // terminal number of rows
 
 func minInt(x, y int) int {
 	if x <= y {
@@ -49,28 +47,28 @@ func drawString(x, y int, s string, fg, bg termbox.Attribute) {
 }
 
 func termClear() {
-	for y := 0; y < height; y++ {
+	for y := 0; y < termHeight; y++ {
 		termClearRow(y)
 	}
 }
 
 func termClearRow(row int) {
-	for x := 0; x < width; x++ {
-		termbox.SetCell(x, row, ' ', defaultfg, defaultbg)
+	for x := 0; x < termWidth; x++ {
+		termbox.SetCell(x, row, ' ', defaultFg, defaultBg)
 	}
 }
 
 func termClearRect(x, y, w, h int) {
 	for row := y; row < y+h; row++ {
 		for col := x; col < x+w; col++ {
-			termbox.SetCell(col, row, ' ', defaultfg, defaultbg)
+			termbox.SetCell(col, row, ' ', defaultFg, defaultBg)
 		}
 	}
 }
 
 func clearToEndOfRow(x, y int) {
-	for ; x < width; x++ {
-		termbox.SetCell(x, y, ' ', defaultfg, defaultbg)
+	for ; x < termWidth; x++ {
+		termbox.SetCell(x, y, ' ', defaultFg, defaultBg)
 	}
 }
 
@@ -85,15 +83,22 @@ func redrawAll(clear bool) {
 	redrawCommandLine()
 }
 
-func redrawChoice(prow, vindex int, selected bool) {
+func redrawChoice(prow, vindex int, underCursor, selected bool) {
 	var fg termbox.Attribute
 	var bg termbox.Attribute
-	if selected {
-		fg = selfg
-		bg = selbg
+	if underCursor {
+		fg = cursorLineFg
+		bg = cursorLineBg
 	} else {
-		fg = defaultfg
-		bg = defaultbg
+		fg = defaultFg
+		bg = defaultBg
+	}
+
+	/* selection indicator */
+	if selected {
+		termbox.SetCell(0, prow, ' ', selIndicatorFg, selIndicatorBg)
+	} else {
+		termbox.SetCell(0, prow, ' ', defaultFg, defaultBg)
 	}
 
 	/* draw leading whitespace */
@@ -107,7 +112,7 @@ func redrawChoice(prow, vindex int, selected bool) {
 	}
 
 	/* clear rest of line */
-	for ii := x; ii < width; ii++ {
+	for ii := x; ii < termWidth; ii++ {
 		termbox.SetCell(x, prow, ' ', fg, bg)
 		x++
 	}
@@ -115,15 +120,10 @@ func redrawChoice(prow, vindex int, selected bool) {
 
 /* TODO: Refactor into using a range slice for better performance */
 func redrawChoices() {
-	for ii := 0; ii < minInt(len(choices)-vtop, pheight); ii++ {
-		redrawChoice(ptop+ii, vtop+ii, false)
-		if isSelected[vtop+ii] {
-			termbox.SetCell(0, ptop+ii, ' ', selIndicatorFg, selIndicatorBg)
-		} else {
-			termbox.SetCell(0, ptop+ii, ' ', defaultfg, defaultbg)
-		}
+	for ii := 0; ii < minInt(len(choices)-viewTopIndex, viewHeight); ii++ {
+		redrawChoice(viewTopRow+ii, viewTopIndex+ii, false, isSelected[viewTopIndex+ii])
 	}
-	redrawChoice(psel, vsel, true)
+	redrawChoice(cursorRow, cursorIndex, true, isSelected[cursorIndex])
 }
 
 func redrawCommandLine() {
@@ -136,14 +136,14 @@ func redrawCurrentLineIndex() {
 
 	nStr := fmt.Sprintf("%d", len(choices))
 	log.Printf("nstr = %s\n", nStr)
-	clearToEndOfRow(width-(len(nStr)*2+1), height-1)
-	selnumStr := fmt.Sprintf("%d/%s", vsel+1, nStr)
-	drawString(width-len(selnumStr), height-1, selnumStr, defaultfg, defaultbg)
+	clearToEndOfRow(termWidth-(len(nStr)*2+1), termHeight-1)
+	selnumStr := fmt.Sprintf("%d/%s", cursorIndex+1, nStr)
+	drawString(termWidth-len(selnumStr), termHeight-1, selnumStr, defaultFg, defaultBg)
 }
 
 func redrawPromptLine() {
-	if ptop != 0 {
-		drawString(0, 0, prompt, defaultfg, defaultbg)
+	if viewTopRow != 0 {
+		drawString(0, 0, prompt, defaultFg, defaultBg)
 	}
 }
 
@@ -154,28 +154,29 @@ func redrawSelectionIndicator(prow int, selected bool) {
 		fg = selIndicatorFg
 		bg = selIndicatorBg
 	} else {
-		fg = defaultbg
-		bg = defaultbg
+		fg = defaultBg
+		bg = defaultBg
 	}
 	termbox.SetCell(0, prow, ' ', fg, bg)
 }
 
 func uiToggleSelection() {
-	if isSelected[vsel] {
+	if isSelected[cursorIndex] {
 		numSelected--
 	} else {
 		numSelected++
 	}
-	isSelected[vsel] = !isSelected[vsel]
-	redrawSelectionIndicator(psel, isSelected[vsel])
+	isSelected[cursorIndex] = !isSelected[cursorIndex]
+	redrawSelectionIndicator(cursorRow, isSelected[cursorIndex])
 }
 
 func main() {
 	exitCode := 0
-	argLog := flag.String("l", "", "Logging output sink")
+	argLog := flag.String("l", "/dev/null", "Logging output sink")
 	argPrompt := flag.String("p", "", "Prompt string")
 	flag.Parse()
 
+	/* Return code idiom. */
 	defer func() { os.Exit(exitCode) }()
 
 	/* Disable logging by default. TODO: Reroute functions */
@@ -210,16 +211,16 @@ func main() {
 	// init
 	prompt = *argPrompt
 	isSelected = make([]bool, len(choices))
-	vsel = 0
-	vtop = 0
-	width, height = termbox.Size()
+	cursorIndex = 0
+	viewTopIndex = 0
+	termWidth, termHeight = termbox.Size()
 	if len(prompt) == 0 {
-		ptop = 0
+		viewTopRow = 0
 	} else {
-		ptop = 1
+		viewTopRow = 1
 	}
-	psel = ptop
-	pheight = height - ptop - 1 // last line is for instructions
+	cursorRow = viewTopRow
+	viewHeight = termHeight - viewTopRow - 1 // last line is for instructions
 
 	redrawAll(false)
 mainloop:
@@ -227,29 +228,29 @@ mainloop:
 		termbox.Flush()
 		switch ev := termbox.PollEvent(); ev.Type {
 		case termbox.EventKey: // TODO: uiFocusNext, uiFocusPrev
-			if ev.Ch == 'j' {
-				if vsel < len(choices)-1 {
-					vsel++
-					if psel == ptop+pheight-1 {
-						vtop++
+			if ev.Ch == 'j' || ev.Key == termbox.KeyArrowDown {
+				if cursorIndex < len(choices)-1 {
+					cursorIndex++
+					if cursorRow == viewTopRow+viewHeight-1 {
+						viewTopIndex++
 						redrawChoices()
 					} else {
-						psel++
-						redrawChoice(psel-1, vsel-1, false)
-						redrawChoice(psel, vsel, true)
+						cursorRow++
+						redrawChoice(cursorRow-1, cursorIndex-1, false, isSelected[cursorIndex-1])
+						redrawChoice(cursorRow, cursorIndex, true, isSelected[cursorIndex])
 					}
 					redrawCurrentLineIndex()
 				}
-			} else if ev.Ch == 'k' {
-				if vsel > 0 {
-					vsel--
-					if psel == ptop {
-						vtop--
+			} else if ev.Ch == 'k' || ev.Key == termbox.KeyArrowUp {
+				if cursorIndex > 0 {
+					cursorIndex--
+					if cursorRow == viewTopRow {
+						viewTopIndex--
 						redrawChoices()
 					} else {
-						psel--
-						redrawChoice(psel+1, vsel+1, false)
-						redrawChoice(psel, vsel, true)
+						cursorRow--
+						redrawChoice(cursorRow+1, cursorIndex+1, false, isSelected[cursorIndex+1])
+						redrawChoice(cursorRow, cursorIndex, true, isSelected[cursorIndex])
 					}
 					redrawCurrentLineIndex()
 				}
@@ -262,9 +263,18 @@ mainloop:
 				break mainloop
 			}
 		case termbox.EventResize:
-			termbox.Sync() // resize internal buffer; see termbox.Size()
-			width, height = ev.Width, ev.Height
-			pheight = height - ptop - 1
+			// resize internal buffer; see termbox.Size()
+			termbox.Sync()
+
+			// update geometry state variables. Note that none other
+			// than the variables below change.
+			termWidth, termHeight = ev.Width, ev.Height
+			viewHeight = termHeight - viewTopRow - 1
+
+			// shift cursor line into view if hidden by resize
+			cursorRow = minInt(viewTopRow+viewHeight-1, cursorRow)
+			cursorIndex = viewTopIndex + (cursorRow - viewTopRow)
+
 			redrawAll(true)
 		}
 	}
@@ -276,7 +286,7 @@ mainloop:
 			}
 		}
 	} else {
-		fmt.Printf("%s\n", choices[vsel])
+		fmt.Printf("%s\n", choices[cursorIndex])
 	}
 }
 
